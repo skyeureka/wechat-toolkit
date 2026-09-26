@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,21 @@ def _ts(epoch: int) -> str:
     return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
 
 
+# A line-leading character that markdown would interpret as structure.
+_MD_STRUCT_RE = re.compile(r"^(\s*)([#>\-+*=|`]|\d+\.)", re.MULTILINE)
+
+
+def _md_block(text: str) -> str:
+    """Escape line-leading markdown so message text renders literally.
+
+    Real chat text often starts with '-', '>' or '#'. Left alone, Obsidian and GitHub
+    turn those messages into lists, quotes or headings, so the export no longer reads
+    as what was actually said.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _MD_STRUCT_RE.sub(lambda m: m.group(1) + "\\" + m.group(2), text)
+
+
 def _file_stem(display_name: str, username: str, stamp: str) -> str:
     return f"{stamp}__{_safe_component(display_name)}__{_safe_component(username)}"
 
@@ -67,7 +83,7 @@ class ChatExportService:
         """Export one chat.  ``since`` is an exclusive ``(create_time, local_id)``
         cursor, so passing the newest cursor of a previous run yields only the
         messages that arrived afterwards (incremental export)."""
-        if fmt not in ("txt", "json", "html"):
+        if fmt not in ("txt", "json", "html", "md"):
             raise ExportError(f"unsupported format: {fmt}")
         contact = self.db.contact(username)
         display = contact.display_name if contact else username
@@ -87,6 +103,8 @@ class ChatExportService:
         with open(output_path, "w", encoding="utf-8", newline="") as fh:
             if fmt == "txt":
                 count = self._write_txt(fh, username, display, progress, include_media, media, since)
+            elif fmt == "md":
+                count = self._write_md(fh, username, display, progress, include_media, media, since)
             elif fmt == "json":
                 count = self._write_json(fh, username, display, progress, include_media, media, since)
             else:
@@ -134,6 +152,53 @@ class ChatExportService:
                 if extras:
                     line += "  " + " ".join(extras)
             fh.write(line + "\n")
+            count += 1
+            if progress and count % 500 == 0:
+                progress(count, None)
+        if progress:
+            progress(count, None)
+        return count
+
+    def _write_md(self, fh, username: str, display: str, progress: ProgressCallback | None,
+                  include_media: bool = False, media=None,
+                  since: tuple[int, int] | None = None) -> int:
+        """Markdown export.
+
+        Reads well as plain text and renders properly in Obsidian/GitHub, which is
+        what makes it the sensible default: one file, no assets required, no HTML
+        escaping surprises, and diff-friendly when appended incrementally.
+        """
+        exported_at = datetime.now()
+        fh.write(f"# {display}\n\n")
+        fh.write("| | |\n|---|---|\n")
+        fh.write(f"| 会话 | `{username}` |\n")
+        fh.write(f"| 导出时间 | {exported_at.strftime('%Y-%m-%d %H:%M:%S')} |\n")
+        if since is not None:
+            fh.write(f"| 增量起点 | `{since[0]},{since[1]}` |\n")
+        fh.write("\n---\n\n")
+
+        count = 0
+        current_day = ""
+        for msg in self.db.iter_chat_all(username, since):
+            day = datetime.fromtimestamp(msg.create_time).strftime("%Y-%m-%d")
+            if day != current_day:
+                if current_day:
+                    fh.write("\n")
+                fh.write(f"## {day}\n\n")
+                current_day = day
+
+            clock = datetime.fromtimestamp(msg.create_time).strftime("%H:%M")
+            who = "我" if msg.is_outgoing else (msg.sender or "群成员")
+            fh.write(f"**{who}** `{clock}`\n\n")
+
+            text = (msg.text or "").strip()
+            if text:
+                fh.write(_md_block(text) + "\n\n")
+
+            if msg.links:
+                extras = [link for link in msg.links if link not in text]
+                for link in extras:
+                    fh.write(f"<{link}>\n\n")
             count += 1
             if progress and count % 500 == 0:
                 progress(count, None)

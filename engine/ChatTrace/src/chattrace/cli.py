@@ -93,7 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--account-dir", required=True)
     exp.add_argument("--user", default=None, help="Exact chat username.")
     exp.add_argument("--query", default="", help="Resolve chat by name/username substring.")
-    exp.add_argument("--format", choices=("txt", "json", "html"), default="txt")
+    exp.add_argument("--format", choices=("txt", "json", "html", "md"), default="md",
+                     help="Output format; markdown (md) is the default.")
     exp.add_argument("--out", default=None, help="Output file (default: <exports>/<stamp>__<name>.<fmt>).")
     exp.add_argument("--media", action="store_true",
                      help="Include media: HTML writes an <xxx>_assets folder with images/voices/videos; "

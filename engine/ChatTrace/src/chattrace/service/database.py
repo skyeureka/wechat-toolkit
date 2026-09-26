@@ -105,13 +105,22 @@ def message_base_type(local_type: int) -> int:
 
 
 def _extract_links(*values: object) -> tuple[str, ...]:
+    """User-visible URLs from message text.
+
+    Only the decoded message text is searched. The raw XML is deliberately excluded:
+    it is metadata, and its CDN/download URLs (stodownload?filekey=...) are plumbing.
+    Extracting them turned media bubbles into walls of query strings, and internal
+    WeChat hosts are filtered for the same reason.
+    """
+    from .payload import is_internal_url
+
     links: list[str] = []
     for value in values:
         text = _value_to_text(value)
         if not text:
             continue
         links.extend(m.group(0).rstrip(".,;:") for m in URL_RE.finditer(text))
-    return tuple(dict.fromkeys(links))
+    return tuple(dict.fromkeys(l for l in links if not is_internal_url(l)))
 
 
 def render_message(local_type: int, message_content: str, compress_content: str, packed_info_data: object = None) -> str:
@@ -697,7 +706,8 @@ def _build_views(db: DatabaseService, username: str, rows: list[dict]) -> list[M
             sender_display = username if contact is not None else "未知发送者"
 
         text = parsed.text or render_message(local_type, "", "", raw.get("packed_info_data"))
-        links = _extract_links(parsed.text, parsed.raw_xml, raw.get("packed_info_data"))
+        # only the readable text feeds link extraction; raw_xml stays metadata
+        links = _extract_links(parsed.text, raw.get("packed_info_data"))
 
         views.append(
             MessageView(

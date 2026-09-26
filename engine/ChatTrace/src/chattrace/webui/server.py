@@ -158,6 +158,50 @@ TASKS = TaskManager()
 
 
 # ------------------------------------------------------------ account helpers
+def detect_active_account() -> str | None:
+    """Account dir of the WeChat profile that is actually in use right now.
+
+    A logged-in WeChat keeps writing to its own db_storage (WAL, kvdb, session), so
+    the account with the most recent database write is the live one. Picking it
+    automatically means the UI opens the account the user is actually using instead
+    of asking them to choose from a list every time.
+
+    Only accounts that exist under a discoverable root are considered, and the caller
+    still has to have a working key for that account, so this cannot silently point at
+    a profile that cannot be read.
+    """
+    best_dir: str | None = None
+    best_mtime = 0.0
+    for root in _probe_common_roots():
+        try:
+            accounts = discover_accounts(Path(root))
+        except Exception:
+            continue
+        for acc in accounts:
+            storage = acc.account_dir / "db_storage"
+            if not storage.is_dir():
+                continue
+            newest = 0.0
+            try:
+                for sub in ("session", "message", "contact", "general"):
+                    d = storage / sub
+                    if not d.is_dir():
+                        continue
+                    for f in d.iterdir():
+                        try:
+                            m = f.stat().st_mtime
+                        except OSError:
+                            continue
+                        if m > newest:
+                            newest = m
+            except OSError:
+                continue
+            if newest > best_mtime:
+                best_mtime = newest
+                best_dir = str(acc.account_dir)
+    return best_dir
+
+
 def current_account() -> Account | None:
     """The account selected in settings, if still discoverable."""
     settings = load_settings()
@@ -343,6 +387,8 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         if method == "POST" and segments == ["select-account"]:
             return self.send_json(self._api_select_account(body))
+        if method == "POST" and segments == ["autoselect"]:
+            return self.send_json(self._api_autoselect())
         if method == "POST" and segments == ["browse"]:
             return self.send_json(self._api_browse(body))
         if method == "POST" and segments == ["key", "capture"]:
@@ -650,9 +696,34 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         account_dir = (body.get("account_dir") or "").strip()
         if not account_dir or not Path(account_dir).is_dir():
             return {"error": "account_dir must be an existing directory"}
-        settings = save_settings({"account_dir": account_dir})
+        settings = save_settings({"account_dir": account_dir, "pinned": True})
         account = current_account()
         return {"ok": True, "account_id": account.account_id if account else None, "settings": settings}
+
+    def _api_autoselect(self) -> dict:
+        """Adopt the currently-logged-in account unless the user pinned another one.
+
+        Runs on UI boot. A pinned choice always wins, so this never overrides an
+        explicit selection.
+        """
+        settings = load_settings()
+        if settings.get("pinned"):
+            account = current_account()
+            if account is not None:
+                return {"ok": True, "changed": False, "account_id": account.account_id}
+        detected = detect_active_account()
+        if not detected:
+            return {"ok": False, "changed": False, "error": "no account detected"}
+        previous = settings.get("account_dir")
+        if previous != detected:
+            save_settings({"account_dir": detected})
+        account = current_account()
+        return {
+            "ok": True,
+            "changed": previous != detected,
+            "account_id": account.account_id if account else None,
+            "account_dir": detected,
+        }
 
     def _api_browse(self, body: dict) -> dict:
         initial = (body.get("initial") or "").strip() or str(Path.home())
@@ -750,7 +821,7 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         include_media = bool(body.get("include_media"))
         if not username:
             return {"error": "missing username"}
-        if fmt not in ("txt", "json", "html"):
+        if fmt not in ("txt", "json", "html", "md"):
             return {"error": f"unsupported format {fmt}"}
 
         def run(task: Task) -> dict:

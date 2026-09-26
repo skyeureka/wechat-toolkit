@@ -236,15 +236,16 @@ kbd { background: #1e242c; border: 1px solid #333c47; border-bottom-width: 2px; 
       </div>
       <div class="rowline">
         <select id="exportFmt">
-          <option value="txt">.txt — 纯文本（易读、轻量）</option>
+          <option value="md" selected>.md — Markdown（默认：Obsidian / GitHub 直接可读）</option>
+          <option value="txt">.txt — 纯文本（轻量）</option>
+          <option value="html">.html — 网页气泡视图（自包含）</option>
           <option value="json">.json — 结构化数据（脚本/迁移）</option>
-          <option value="html" selected>.html — 网页气泡视图（自包含）</option>
         </select>
         <button class="btn primary" onclick="startExport()">开始导出</button>
       </div>
       <label class="check" style="margin-top:10px">
         <input type="checkbox" id="exportMedia" checked>
-        包含媒体（图片 / 语音 .silk / 视频）。HTML 导出时媒体写入同目录 <code>xxx_assets</code> 文件夹并内嵌到页面；txt/json 仅附带状态说明。
+        包含媒体（图片 / 语音 .silk / 视频）。HTML 导出时媒体写入同目录 <code>xxx_assets</code> 文件夹并内嵌到页面；md/txt/json 仅附带状态说明。
       </label>
       <div class="hint" style="margin-top:6px">提示：新版（V2）加密图片与已被微信清理的原文件无法导出，会在页面中标注 ⚠️。</div>
       <div id="resultBox"></div>
@@ -734,7 +735,9 @@ function appendMedia(bubble, m) {
   // plain text (and anything unrecognised): keep the text, plus links
   if (m.text) { const t = document.createElement("span"); t.textContent = m.text; bubble.appendChild(t); }
 }
-function renderMessages(messages, prepend) {
+function renderMessages(messages, mode) {
+  // mode: false = replace, true/"prepend" = older messages on top,
+  // "append" = newly arrived messages at the bottom.
   const body = $("chatBody");
   const frag = document.createDocumentFragment();
   messages.forEach(m => {
@@ -767,8 +770,18 @@ function renderMessages(messages, prepend) {
     div.append(who, bubble, time);
     frag.appendChild(div);
   });
-  if (prepend) body.prepend(frag); else { body.innerHTML = ""; body.appendChild(frag); }
-  body.scrollTop = prepend ? frag.firstChild.offsetTop - 100 : body.scrollHeight;
+  if (mode === "append") {
+    body.appendChild(frag);
+    return;
+  }
+  if (mode) {
+    body.prepend(frag);
+    body.scrollTop = frag.firstChild.offsetTop - 100;
+  } else {
+    body.innerHTML = "";
+    body.appendChild(frag);
+    body.scrollTop = body.scrollHeight;
+  }
 }
 function openExportTab() {
   if (!currentChat) { alert("请先在「浏览聊天」选择一个会话"); goto(4); return; }
@@ -808,20 +821,88 @@ function renderExportResult(result) {
 
 // ------------------------------------------------------------------ boot
 (async function boot() {
+  // Adopt the account WeChat is actually logged into, so the user lands on their
+  // own chats instead of a picker. A pinned choice is preserved server-side.
+  try { await api("/api/autoselect", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); } catch (e) {}
   await refreshState();
   if (STATE && STATE.account) {
     renderKeyCard();
-    if (STATE.key && STATE.key.present) {
-      // show decrypt step first if not ready
-      goto(STATE.decrypted.total && STATE.decrypted.ready === STATE.decrypted.total ? 4 : 3);
-      return;
-    }
-    goto(2);
+    const ready = STATE.decrypted && STATE.decrypted.total > 0 && STATE.decrypted.ready === STATE.decrypted.total;
+    // Straight to the chats: the key/decrypt steps are only surfaced when they are
+    // actually blocking, which is what keeps the page simple for normal use.
+    if (ready) { goto(4); }
+    else if (STATE.key && STATE.key.present) { goto(3); autoDecrypt(); }
+    else { goto(2); }
+    startLive();
     return;
   }
+  goto(1);
   scanRoot();
 })();
-$("exportFmt").value = "html";
+
+// -------------------------------------------------------------- live refresh
+// The point of the page is reading current chats, so keep the view in step with the
+// database: decrypt status, session list and the open conversation all refresh on a
+// timer. Only the open chat is diffed; lists are re-rendered wholesale.
+let liveTimer = null;
+let liveBusy = false;
+async function liveTick() {
+  if (liveBusy) return;
+  liveBusy = true;
+  try {
+    const before = STATE && STATE.decrypted ? STATE.decrypted.ready : 0;
+    await refreshState();
+    const after = STATE && STATE.decrypted ? STATE.decrypted.ready : 0;
+    const ready = STATE && STATE.decrypted && STATE.decrypted.total > 0 && after === STATE.decrypted.total;
+    if (after !== before) {  // decryption caught up: enable the later steps
+      if (ready) loadDecryptStatus();
+    }
+    const active = document.querySelector(".screen.active");
+    if (active && active.id === "screen-4" && ready) {
+      await loadSessions();
+      if (currentChat) await fetchNewMessages();
+    }
+  } catch (e) {
+    // a transient read failure must not kill the timer
+  } finally {
+    liveBusy = false;
+  }
+}
+function startLive() {
+  if (liveTimer) return;
+  liveTimer = setInterval(liveTick, 5000);
+}
+function stopLive() {
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+}
+// Append messages that arrived since the last render, without disturbing scroll.
+async function fetchNewMessages() {
+  const c = currentChat; if (!c) return;
+  const rows = document.querySelectorAll("#chatBody .msg");
+  const last = rows[rows.length - 1];
+  if (!last) return;  // an empty pane will be filled by the normal fetch
+  const lastCt = Number(last.dataset.ct || 0);
+  const lastLid = Number(last.dataset.lid || 0);
+  const data = await api(`/api/chat/${encodeURIComponent(c.username)}?limit=200`);
+  if (!data.messages || data.error) return;
+  const fresh = data.messages.filter(m =>
+    m.create_time > lastCt || (m.create_time === lastCt && m.local_id > lastLid));
+  if (!fresh.length) return;
+  const atBottom = $("chatBody").scrollHeight - $("chatBody").scrollTop - $("chatBody").clientHeight < 80;
+  renderMessages(fresh.reverse(), "append");
+  c.loaded += fresh.length;
+  $("chatId").textContent = `${c.username} · 共 ${data.total ?? "?"} 条 · 已显示 ${c.loaded}`;
+  if (atBottom) $("chatBody").scrollTop = $("chatBody").scrollHeight;
+}
+
+// The decrypt step can be run automatically once a key exists, so an already-set-up
+// account needs no clicks at all.
+function autoDecrypt() {
+  if (!STATE || !STATE.key || !STATE.key.present) return;
+  const d = STATE.decrypted || {};
+  if (d.total > 0 && d.ready === d.total) return;
+  startTask("decrypt", "解密数据", "/api/decrypt", { force: false });
+}
 </script>
 </body>
 </html>

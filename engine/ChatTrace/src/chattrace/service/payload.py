@@ -247,6 +247,60 @@ def _clean_text(value: str) -> str:
     return "".join(out).strip()
 
 
+# A real markup tag: '<' then optional '/' and whitespace, then a name character.
+# Deliberately narrow so ordinary prose like "1 < 2 > 3" or "A<B" is left alone.
+_TAG_STRIP_RE = re.compile(r"<\s*/?\s*[A-Za-z_][^<>]*>")
+
+# <![CDATA[...]]> wrappers survive in some titles; keep the content, drop the wrapper.
+_CDATA_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
+
+# CDN/host URLs that live inside message metadata. These are plumbing, not content:
+# surfacing them turns a bubble into a wall of query strings.
+_INTERNAL_URL_RE = re.compile(
+    r"^https?://(?:[\w.-]*\.)?(?:tc\.qq\.com|weixin\.qq\.com|qpic\.cn|qlogo\.cn|wxapp\.tc\.qq\.com)",
+    re.IGNORECASE,
+)
+
+
+def is_internal_url(url: str) -> bool:
+    """True for WeChat/CDN plumbing URLs that should never be shown as content."""
+    if not url:
+        return False
+    if "stodownload" in url or "filekey=" in url or "cdnurl" in url:
+        return True
+    return bool(_INTERNAL_URL_RE.match(url))
+
+
+def clean_inline(value: str) -> str:
+    """Plain text for a one-line metadata field (title/desc/quote).
+
+    Removes CDATA wrappers and markup, so a card title reads
+    '[我的周报] 4月20日-4月26日' instead of '[链接] <![CDATA[[我的周报]...]]>'.
+    """
+    if not value:
+        return value
+    value = _CDATA_RE.sub(r"\1", value)
+    value = _TAG_STRIP_RE.sub("", value)
+    return _unescape(_clean_text(value))
+
+
+def strip_markup(value: str) -> str:
+    """Turn a payload that is actually HTML into plain readable text.
+
+    System notices (base type 10000) are stored as HTML fragments, e.g.
+    '公众号"X"已更改名称为"Y"<a href="...">查看详情</a>'. Rendering the raw string
+    shows the tags themselves, which reads as machine code rather than a message.
+    Tags are removed while their inner text is kept, then entities are resolved.
+    """
+    if not value or "<" not in value or ">" not in value:
+        return value
+    if not _TAG_STRIP_RE.search(value):
+        return value
+    stripped = _TAG_STRIP_RE.sub("", value)
+    stripped = _unescape(stripped)
+    return _clean_text(stripped)
+
+
 def _appmsg_kind(subtype: int) -> tuple[str, str]:
     return APPMSG_LABELS.get(subtype, ("link", "卡片"))
 
@@ -264,12 +318,13 @@ def parse_payload(local_type: int, message_content: Any, source: Any = None) -> 
         if match:
             parsed.sender_hint = match.group("who")
             text = match.group("rest")
-        parsed.text = _clean_text(text)
+        parsed.text = _clean_text(strip_markup(text))
         return parsed
 
     if base_type == SYSTEM:
         parsed.kind = "system"
-        parsed.text = _clean_text(plain)
+        # These notices are stored as HTML fragments; show their text, not the tags.
+        parsed.text = _clean_text(strip_markup(plain))
         return parsed
 
     if base_type in (IMAGE, VOICE, VIDEO, EMOJI, LOCATION, APPMSG, VOIP, CARD, OPENIM_CARD) or plain.lstrip().startswith("<"):
@@ -287,7 +342,7 @@ def parse_payload(local_type: int, message_content: Any, source: Any = None) -> 
         return parsed
 
     # unknown type: show readable text when it looks like text, else a generic label
-    cleaned = _clean_text(plain)
+    cleaned = _clean_text(strip_markup(plain))
     parsed.kind = "other"
     parsed.text = cleaned if cleaned and not _looks_binary(plain) else f"类型 {base_type}"
     return parsed
@@ -380,8 +435,8 @@ def _parse_rich(base_type: int, xml_text: str) -> MediaMeta:
         meta.kind = kind
         meta.label = label
         meta.subtype = subtype
-        meta.title = _unescape_rounds(_inner(xml_text, "title"))
-        meta.desc = _unescape_rounds(_inner(xml_text, "des"))
+        meta.title = clean_inline(_unescape_rounds(_inner(xml_text, "title")))
+        meta.desc = clean_inline(_unescape_rounds(_inner(xml_text, "des")))
         meta.url = _unescape(_inner(xml_text, "url"))
         meta.md5 = _inner(xml_text, "md5")
         if kind == "file":
