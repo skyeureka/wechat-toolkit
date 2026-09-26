@@ -419,6 +419,8 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
                     counts["sessions"] = len(every)
                     counts["conversations"] = sum(
                         1 for s in every if s.kind in ("group", "person"))
+                    counts["persons"] = sum(1 for s in every if s.kind == "person")
+                    counts["groups"] = sum(1 for s in every if s.kind == "group")
                     counts["contacts"] = len(db.contacts())
                 except Exception:
                     pass
@@ -477,7 +479,7 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         q = (query.get("q") or [""])[0] or None
         limit = int((query.get("limit") or [200])[0])
         # Default to real conversations; pass kinds=all to include official accounts.
-        raw_kinds = (query.get("kinds") or ["conversations"])[0]
+        raw_kinds = (query.get("kinds") or ["person"])[0]
         if raw_kinds == "all":
             kinds = None
         elif raw_kinds == "conversations":

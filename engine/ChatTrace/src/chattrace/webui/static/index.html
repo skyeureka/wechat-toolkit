@@ -185,7 +185,7 @@ kbd { background: #1e242c; border: 1px solid #333c47; border-bottom-width: 2px; 
         <div class="tabs">
           <button class="active" id="tabSess" onclick="switchBrowse('sessions',this)">聊天</button>
           <button id="tabCont" onclick="switchBrowse('contacts',this)">联系人</button>
-          <button id="tabKind" onclick="toggleKinds()" style="margin-left:auto">只看群聊/个人 ✓</button>
+          <button id="tabKind" onclick="toggleKinds()" style="margin-left:auto">只看个人 ✓</button>
         </div>
         <div class="searchrow">
           <input type="text" id="sessSearch" placeholder="搜索名称 / 备注 / 内容…" onkeyup="searchBrowse(event)">
@@ -492,20 +492,25 @@ async function searchBrowse(ev) {
 }
 async function loadSessions() {
   const q = $("sessSearch").value.trim();
-  const kinds = showConversationsOnly ? "conversations" : "all";
+  const kinds = CHAT_FILTERS[chatFilter].kinds;
   const data = await api(`/api/sessions?limit=400&kinds=${kinds}`
     + (q ? "&q=" + encodeURIComponent(q) : ""));
   if (data.error) { $("sessList").innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
   sessionCache = data.sessions;
   renderSessionList();
   const btn = $("tabKind");
-  if (btn) btn.textContent = showConversationsOnly ? "只看群聊/个人 ✓" : "显示全部（含公众号）";
+  if (btn) btn.textContent = CHAT_FILTERS[chatFilter].label;
 }
-// Official accounts dominate a typical account list; default to real conversations and
-// let the switch bring them back when they are actually wanted.
-let showConversationsOnly = true;
+// Default to individual contacts: group chats are numerous and noisy, and official
+// accounts are not conversations at all. The button cycles through the wider views.
+const CHAT_FILTERS = [
+  { kinds: "person", label: "只看个人 ✓" },
+  { kinds: "conversations", label: "含群聊" },
+  { kinds: "all", label: "全部（含公众号）" },
+];
+let chatFilter = 0;
 function toggleKinds() {
-  showConversationsOnly = !showConversationsOnly;
+  chatFilter = (chatFilter + 1) % CHAT_FILTERS.length;
   loadSessions();
 }
 function renderSessionList() {
