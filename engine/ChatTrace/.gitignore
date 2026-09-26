@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.spec
+*.egg-info/
+
+# local runtime state (keys live in %LOCALAPPDATA%\ChatTrace, never here)
+.chattrace/
+*.keyinfo
+wx_password.bin
+*.log
+
+# reverse-engineering scratch space (may contain real account paths)
+.research_wx/
+
+# machine-local operating guide (contains the real account id and paths)
+AGENT_GUIDE.md

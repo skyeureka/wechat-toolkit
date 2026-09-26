@@ -1,0 +1,18 @@
+# local env
+venv/
+__pycache__/
+*.pyc
+
+# NEVER commit these - plaintext chat data / extracted keys
+keys/
+*.keyinfo
+decrypted/
+exports/
+work/
+diag_*.png
+*_window.png
+
+# scratch
+verify_out.txt
+sessions.txt
+test_export.*
