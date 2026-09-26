@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from ..config import (
     KeyagentError,
 )
 from ..models import AnchorSet, KeyInfo
+from . import picker
 from . import verify
 
 ProgressFn = Callable[[str, object], None]
@@ -143,6 +145,10 @@ def capture_key(
     script = None
     try:
         try:
+            # cwd matters: inheriting the caller's directory can keep WeChat from
+            # resolving its own paths, so it never reaches the DB-open path.
+            pid = frida.spawn(str(weixin_exe), cwd=str(Path(weixin_exe).parent))
+        except TypeError:
             pid = frida.spawn(str(weixin_exe))
         except Exception as exc:
             raise KeyagentError(ERR_FRIDA, f"frida.spawn failed: {exc}") from exc
@@ -201,11 +207,43 @@ def capture_key(
         progress("resumed", "")
         frida.resume(pid)
 
+        # A spawned WeChat parks on the account picker and waits, so nothing ever
+        # reaches the codec path on its own. Click through it in a background thread;
+        # it only ever touches our own spawned pid.
+        stop_clicking = threading.Event()
+
+        def _auto_click() -> None:
+            clicks = 0
+            tries = 0
+            while not stop_clicking.wait(2.0):
+                if found_key is not None or clicks >= 2:
+                    return
+                tries += 1
+                try:
+                    result = picker.click_account_picker(pid)
+                except Exception as exc:      # never let clicking break the capture
+                    if tries <= 3:
+                        progress("autoclick-error", str(exc)[:120])
+                    continue
+                if result.status == "clicked":
+                    clicks += 1
+                    progress("autoclick", f"clicked picker ({result.x},{result.y})")
+                    stop_clicking.wait(3.0)
+                elif result.status == "occluded":
+                    if tries <= 6:
+                        progress("autoclick", f"window not on top (pid {result.occluded_by}); retrying")
+                elif result.status in ("no_window", "no_button") and tries <= 3:
+                    progress("autoclick", f"picker not ready ({result.status})")
+
+        clicker = threading.Thread(target=_auto_click, daemon=True)
+        clicker.start()
+
         deadline = time.time() + observe_ms / 1000.0
         while time.time() < deadline:
             if found_key is not None:
                 break
             time.sleep(0.25)
+        stop_clicking.set()
 
         if found_key is None:
             if stats.hook_fires:

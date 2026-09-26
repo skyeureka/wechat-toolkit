@@ -27,6 +27,7 @@ import json
 import mimetypes
 import os
 import re
+import string
 import subprocess
 import tempfile
 import threading
@@ -810,20 +811,49 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
 
 # ------------------------------------------------------------ native helpers
 def _probe_common_roots() -> list[str]:
+    r"""Candidate WeChat data roots, including non-system drives.
+
+    WeChat's data directory is user-configurable and in practice often sits on another
+    drive entirely (this machine keeps it on T:\xwechat_files). Only probing the
+    Documents folder makes the Account step look empty even though the data is right
+    there, so scan every mounted drive for the two known folder names as well.
+    """
     home = Path.home()
     candidates = [
         home / "Documents" / "xwechat_files",
         home / "xwechat_files",
         Path(os.environ.get("USERPROFILE", str(home))) / "Documents" / "xwechat_files",
     ]
+
     seen: set[str] = set()
-    roots = []
+    roots: list[str] = []
     for c in candidates:
         key = str(c)
         if key in seen or not c.is_dir():
             continue
         seen.add(key)
         roots.append(key)
+
+    # drive scan: catches relocated data, which the Documents-only probe misses
+    for letter in string.ascii_uppercase:
+        drive = Path(f"{letter}:\\")
+        try:
+            if not drive.is_dir():
+                continue
+        except OSError:
+            continue
+        for name in ("xwechat_files", "WeChat Files"):
+            cand = drive / name
+            try:
+                if not cand.is_dir():
+                    continue
+            except OSError:
+                continue
+            key = str(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            roots.append(key)
     return roots
 
 

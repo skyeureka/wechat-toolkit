@@ -24,10 +24,6 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-HERE = Path(__file__).resolve().parent
-SCRIPTS = HERE / "scripts"
-
-
 def hr(title: str = "") -> None:
     print("\n" + "=" * 68)
     if title:
@@ -236,14 +232,29 @@ def main() -> int:
         if weixin_running():
             print("  WeChat is running; closing it so a capture instance can start ...")
             close_weixin()
-        print("  capturing key (spawns a temporary WeChat; closes it afterwards) ...")
-        r = subprocess.run(
-            [sys.executable, str(SCRIPTS / "capture_win.py"), str(account_dir), "180"]
-        )
-        if r.returncode != 0:
-            print("\n  !! key capture failed.")
-            print("     Make sure WeChat is signed in normally at least once, then retry.")
-            return r.returncode
+        print("  capturing key (spawns a temporary WeChat; clicks its account picker; then closes it) ...")
+        from chattrace.keyagent.account import resolve_account
+        from chattrace.service.keycapture import CaptureService
+
+        def on_progress(stage: str, payload=None) -> None:
+            if stage == "attempt":
+                print(f"  trial {payload}")
+            elif stage in ("spawned", "module-loaded", "resumed", "key-found", "stored",
+                           "autoclick", "autoclick-error", "retry", "cross-check"):
+                print(f"    [{stage}] {payload}")
+            elif stage == "armed":
+                print(f"    [armed] {payload}")
+
+        try:
+            acct = resolve_account(account_dir)
+            key = CaptureService.run(
+                acct, observe_ms=180_000, store=True, progress=on_progress
+            )
+            print(f"  ok  key captured: fp={key.fingerprint} (WeChat {key.wechat_version})")
+        except Exception as exc:
+            print(f"\n  !! key capture failed: {exc}")
+            print("     Make sure WeChat has been signed in normally at least once, then retry.")
+            return 1
     else:
         print("  ok  a stored key already opens this account's databases")
 
