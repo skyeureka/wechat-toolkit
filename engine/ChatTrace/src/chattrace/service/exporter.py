@@ -100,7 +100,10 @@ class ChatExportService:
         self._media = media
 
         count = 0
-        with open(output_path, "w", encoding="utf-8", newline="") as fh:
+        # utf-8-sig: the BOM makes Windows editors (Notepad, Excel, older word
+        # processors) detect UTF-8 instead of decoding as GBK, which is what turned
+        # Chinese text into mojibake like "鏁栧瓙鍚".
+        with open(output_path, "w", encoding="utf-8-sig", newline="") as fh:
             if fmt == "txt":
                 count = self._write_txt(fh, username, display, progress, include_media, media, since)
             elif fmt == "md":

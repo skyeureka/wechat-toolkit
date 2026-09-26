@@ -171,6 +171,40 @@ class ContactView:
         }
 
 
+# Chats that are plumbing rather than conversations with a human.
+SYSTEM_CHAT_NAMES = {
+    "filehelper", "newsapp", "fmessage", "floatbottle", "medianote",
+    "qmessage", "tmessage", "weixin", "qqmail", "notifymessage",
+    "voipmessageholder", "exmail_tool", "brandsessionholder",
+    "brandservicesessionholder", "@placeholder_foldgroup",
+    "@opencustomerservicemsg", "helper_entry", "officialaccounts",
+}
+
+
+def chat_kind(username: str) -> str:
+    """Classify a session as group / person / official / openim / service.
+
+    Driven by the address form rather than display name, because display names are
+    user-editable and localised.  A typical account is majority official accounts,
+    which are noise when the goal is reading real conversations, so the chat list
+    filters by this instead of showing every row.
+    """
+    u = (username or "").strip()
+    if not u:
+        return "service"
+    if u.endswith("@chatroom"):
+        return "group"
+    if u.startswith("gh_"):
+        return "official"
+    if u.endswith("@openim") or u.endswith("@kefu.openim"):
+        return "openim"
+    if u.lower() in SYSTEM_CHAT_NAMES:
+        return "service"
+    if "@" in u:
+        return "service"
+    return "person"
+
+
 @dataclass(frozen=True)
 class SessionView:
     username: str
@@ -179,6 +213,7 @@ class SessionView:
     last_timestamp: int
     unread_count: int
     last_sender_display: str = ""
+    kind: str = ""
 
     @property
     def search_blob(self) -> str:
@@ -192,6 +227,7 @@ class SessionView:
             "last_timestamp": self.last_timestamp,
             "unread_count": self.unread_count,
             "last_sender_display": self.last_sender_display,
+            "kind": self.kind or chat_kind(self.username),
         }
 
 
@@ -343,7 +379,13 @@ class DatabaseService:
         return self.load_contacts().get(username)
 
     # --------------------------------------------------------------- sessions
-    def sessions(self, query: str | None = None, limit: int = 500) -> list[SessionView]:
+    def sessions(self, query: str | None = None, limit: int = 500,
+                 kinds: set[str] | None = None) -> list[SessionView]:
+        """Sessions newest-first.
+
+        ``kinds`` restricts the result to chat kinds (see chat_kind); passing None
+        returns everything so existing callers keep their behaviour.
+        """
         contacts = self.load_contacts()
         con = self._connect(_SESSION_DB_REL)
         out: list[SessionView] = []
@@ -377,8 +419,11 @@ class DatabaseService:
                     last_timestamp=int(values.get("last_timestamp") or 0),
                     unread_count=int(values.get("unread_count") or 0),
                     last_sender_display=str(values.get("last_sender_display_name") or ""),
+                    kind=chat_kind(username),
                 )
             )
+        if kinds is not None:
+            out = [s for s in out if s.kind in kinds]
         if query:
             normalized = query.lower()
             out = [s for s in out if normalized in s.search_blob]

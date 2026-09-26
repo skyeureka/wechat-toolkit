@@ -134,64 +134,46 @@ kbd { background: #1e242c; border: 1px solid #333c47; border-bottom-width: 2px; 
 <header>
   <div class="logo">Chat<b>Trace</b></div>
   <nav class="steps" id="steps">
-    <button data-step="1" class="active">1 · 选择账号</button>
-    <button data-step="2" disabled>2 · 密钥</button>
-    <button data-step="3" disabled>3 · 解密数据</button>
-    <button data-step="4" disabled>4 · 浏览聊天</button>
-    <button data-step="5" disabled>5 · 导出</button>
+    <button data-step="1" class="active">1 · 连接</button>
+    <button data-step="4" disabled>2 · 聊天</button>
+    <button data-step="5" disabled>3 · 导出</button>
   </nav>
   <div id="pillbox"></div>
 </header>
 
 <main>
-  <!-- ============ STEP 1: account ============ -->
+  <!-- ============ STEP 1: connect (account + key + decrypt, merged) ============ -->
   <section class="screen active" id="screen-1">
-    <div class="steptitle"><span class="n">1</span><h2>选择微信账号</h2></div>
-    <p class="sub">ChatTrace 读取本机微信 4.x（4.1.11+）的账号数据。选择一个 <b>xwechat_files 根目录</b>，或直接指定账号目录。</p>
+    <div class="steptitle"><span class="n">1</span><h2>连接</h2></div>
+    <p class="sub">自动识别正在使用的微信账号并准备数据；正常情况下这里不需要任何操作。</p>
+
     <div class="card">
-      <div class="rowline">
+      <div id="connectSummary" class="hint">正在检测当前微信账号…</div>
+      <div id="keyCard" style="margin-top:10px"></div>
+      <div id="decryptSummary" class="hint" style="margin-top:10px">正在读取数据状态…</div>
+      <div class="rowline" style="margin-top:10px">
+        <button class="btn" id="refreshDbsBtn" onclick="liveTick()">刷新</button>
+        <button class="btn primary" id="decryptBtn" onclick="startDecrypt(false)">解密 / 增量刷新</button>
+        <button class="btn ghost" id="decryptForceBtn" onclick="startDecrypt(true)">强制重解密</button>
+      </div>
+      <table class="dbs" id="dbTable" style="margin-top:10px"></table>
+    </div>
+
+    <details class="card">
+      <summary style="cursor:pointer;font-size:13px;color:#9aa2ab">高级：换账号 / 手动密钥</summary>
+      <div class="rowline" style="margin-top:10px">
         <input type="text" id="rootInput" style="flex:1" placeholder="xwechat_files 根目录路径，例如 D:\…\xwechat_files">
         <button class="btn" onclick="scanRoot()">扫描该目录</button>
         <button class="btn ghost" onclick="browseDir()">📁 浏览选择…</button>
       </div>
-      <div class="hint" style="margin-top:8px">提示：微信 4.x 数据默认在 <kbd>文档\xwechat_files</kbd>；也可扫其他盘的迁移目录。</div>
-    </div>
-    <div id="accountResults"></div>
-  </section>
-
-  <!-- ============ STEP 2: key ============ -->
-  <section class="screen" id="screen-2">
-    <div class="steptitle"><span class="n">2</span><h2>密钥（一次性自动获取）</h2></div>
-    <p class="sub">微信数据库使用 32 字节主密钥加密。首次使用需自动捕获一次；密钥仅保存在本机（DPAPI 保护），之后无需微信在线。</p>
-    <div class="card" id="keyCard"></div>
-    <div class="card">
-      <div class="tabs">
-        <button class="active" onclick="tabManual(false,this)">已有关键信息（高级）</button>
-      </div>
-      <div class="field">
+      <div id="accountResults" style="margin-top:10px"></div>
+      <div class="field" style="margin-top:12px">
         <label>粘贴 64 位十六进制主密钥（来自记忆扫描 / 旧工具）</label>
         <input type="password" id="manualHex" class="mono" style="width:100%" placeholder="64 hex chars…">
       </div>
       <button class="btn" onclick="storeManualKey()">校验并保存</button>
       <div id="manualResult"></div>
-    </div>
-  </section>
-
-  <!-- ============ STEP 3: decrypt ============ -->
-  <section class="screen" id="screen-3">
-    <div class="steptitle"><span class="n">3</span><h2>解密数据</h2></div>
-    <p class="sub">把加密数据库解密为明文副本（保留原文件，解密副本仅用于本地读取/导出，支持增量刷新）。</p>
-    <div class="card">
-      <div class="rowline" style="justify-content:space-between">
-        <div id="decryptSummary" class="hint">正在读取状态…</div>
-        <div style="display:flex;gap:8px">
-          <button class="btn" id="refreshDbsBtn" onclick="loadDecryptStatus()">刷新</button>
-          <button class="btn primary" id="decryptBtn" onclick="startDecrypt(false)">解密 / 增量刷新</button>
-          <button class="btn ghost" id="decryptForceBtn" onclick="startDecrypt(true)">强制重解密</button>
-        </div>
-      </div>
-      <table class="dbs" id="dbTable" style="margin-top:10px"></table>
-    </div>
+    </details>
   </section>
 
   <!-- ============ STEP 4: browse ============ -->
@@ -201,8 +183,9 @@ kbd { background: #1e242c; border: 1px solid #333c47; border-bottom-width: 2px; 
     <div class="split">
       <div>
         <div class="tabs">
-          <button class="active" id="tabSess" onclick="switchBrowse('sessions',this)">会话</button>
+          <button class="active" id="tabSess" onclick="switchBrowse('sessions',this)">聊天</button>
           <button id="tabCont" onclick="switchBrowse('contacts',this)">联系人</button>
+          <button id="tabKind" onclick="toggleKinds()" style="margin-left:auto">只看群聊/个人 ✓</button>
         </div>
         <div class="searchrow">
           <input type="text" id="sessSearch" placeholder="搜索名称 / 备注 / 内容…" onkeyup="searchBrowse(event)">
@@ -301,8 +284,7 @@ function goto(step) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   $("screen-" + step).classList.add("active");
   document.querySelectorAll("#steps button").forEach(b => b.classList.toggle("active", +b.dataset.step === step));
-  if (step === 1) scanRoot();
-  if (step === 3) loadDecryptStatus();
+  if (step === 1) renderConnect();
   if (step === 4) { loadSessions(); }
   if (step === 5) { const who = currentChat ? currentChat.display : ""; $("exportUser").value = who; }
 }
@@ -313,9 +295,23 @@ function refreshStepGates() {
   const hasAcct = !!(STATE && STATE.account);
   const hasKey = hasAcct && STATE.key && STATE.key.present;
   const ready = hasKey && STATE.decrypted && STATE.decrypted.total > 0 && STATE.decrypted.ready === STATE.decrypted.total;
-  enableStep(2, hasAcct); enableStep(3, hasKey); enableStep(4, ready); enableStep(5, ready);
-  // auto-advance visual affordance
-  if (hasAcct && !hasKey) document.querySelector('#steps button[data-step="2"]').textContent = "2 · 密钥 ⚠";
+  // Only the chat and export steps can be blocked now; connecting is always available.
+  enableStep(1, true); enableStep(4, ready); enableStep(5, ready);
+}
+
+// The merged connect view: who we detected, key state, and data readiness in one place.
+async function renderConnect() {
+  renderKeyCard();
+  await loadDecryptStatus();
+  const box = $("connectSummary");
+  if (!box) return;
+  if (STATE && STATE.account) {
+    const conv = STATE.counts ? STATE.counts.conversations : null;
+    box.innerHTML = `已连接 <b class="mono">${esc(STATE.account.account_id)}</b>`
+      + (conv != null ? ` · <b>${conv}</b> 个聊天` : "");
+  } else {
+    box.textContent = "未检测到微信账号。请展开下方「高级」选择账号目录。";
+  }
 }
 
 async function refreshState() {
@@ -350,7 +346,7 @@ async function scanRoot() {
       btn.onclick = async () => {
         const res = await api("/api/select-account", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_dir: a.account_dir }) });
         if (res.error) { alert(res.error); return; }
-        await refreshState(); goto(2);
+        await refreshState(); renderConnect();
       };
       chip.append(sel, nm, btn);
       card.appendChild(chip);
@@ -397,9 +393,6 @@ async function renderKeyCard() {
   };
   row.appendChild(btn);
   card.appendChild(row);
-}
-async function tabManual(_, el) {
-  document.querySelectorAll("#screen-2 .tabs button").forEach(b => b.classList.toggle("active", b === el));
 }
 async function storeManualKey() {
   const hex = $("manualHex").value.trim();
@@ -455,7 +448,7 @@ function pollTask(taskId, kind) {
       refreshState().then(() => {
         if (kind === "decrypt" || kind === "key-capture") { renderKeyCard(); loadDecryptStatus(); if (kind === "decrypt") goto(4); }
         if (kind === "export") renderExportResult(t.result);
-        if (kind === "key-capture" && t.status === "done") { goto(3); }
+        if (kind === "key-capture" && t.status === "done") { renderConnect(); autoDecrypt(); }
       });
     }
   };
@@ -482,7 +475,7 @@ async function loadDecryptStatus() {
   });
 }
 function startDecrypt(force) {
-  if (!STATE || !STATE.key || !STATE.key.present) { alert("请先在「密钥」步骤准备密钥"); goto(2); return; }
+  if (!STATE || !STATE.key || !STATE.key.present) { alert("尚未获取密钥，请先在第 1 步「连接」里获取。"); goto(1); return; }
   startTask("decrypt", force ? "强制重解密" : "解密 / 增量刷新", "/api/decrypt", { force: !!force });
 }
 
@@ -499,10 +492,21 @@ async function searchBrowse(ev) {
 }
 async function loadSessions() {
   const q = $("sessSearch").value.trim();
-  const data = await api("/api/sessions?limit=400" + (q ? "&q=" + encodeURIComponent(q) : ""));
+  const kinds = showConversationsOnly ? "conversations" : "all";
+  const data = await api(`/api/sessions?limit=400&kinds=${kinds}`
+    + (q ? "&q=" + encodeURIComponent(q) : ""));
   if (data.error) { $("sessList").innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
   sessionCache = data.sessions;
   renderSessionList();
+  const btn = $("tabKind");
+  if (btn) btn.textContent = showConversationsOnly ? "只看群聊/个人 ✓" : "显示全部（含公众号）";
+}
+// Official accounts dominate a typical account list; default to real conversations and
+// let the switch bring them back when they are actually wanted.
+let showConversationsOnly = true;
+function toggleKinds() {
+  showConversationsOnly = !showConversationsOnly;
+  loadSessions();
 }
 function renderSessionList() {
   const box = $("sessList"); box.innerHTML = "";
@@ -825,20 +829,23 @@ function renderExportResult(result) {
   // own chats instead of a picker. A pinned choice is preserved server-side.
   try { await api("/api/autoselect", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); } catch (e) {}
   await refreshState();
+  reconcileBoot();
+  startLive();
+})();
+
+// Land on the chats when ready; otherwise stay on the connect view, which now carries
+// the key and decrypt controls and can resolve everything by itself.
+function reconcileBoot() {
   if (STATE && STATE.account) {
-    renderKeyCard();
+    renderConnect();
     const ready = STATE.decrypted && STATE.decrypted.total > 0 && STATE.decrypted.ready === STATE.decrypted.total;
-    // Straight to the chats: the key/decrypt steps are only surfaced when they are
-    // actually blocking, which is what keeps the page simple for normal use.
-    if (ready) { goto(4); }
-    else if (STATE.key && STATE.key.present) { goto(3); autoDecrypt(); }
-    else { goto(2); }
-    startLive();
+    if (ready) { goto(4); return; }
+    goto(1);
+    if (STATE.key && STATE.key.present) autoDecrypt();
     return;
   }
   goto(1);
-  scanRoot();
-})();
+}
 
 // -------------------------------------------------------------- live refresh
 // The point of the page is reading current chats, so keep the view in step with the
@@ -901,7 +908,7 @@ function autoDecrypt() {
   if (!STATE || !STATE.key || !STATE.key.present) return;
   const d = STATE.decrypted || {};
   if (d.total > 0 && d.ready === d.total) return;
-  startTask("decrypt", "解密数据", "/api/decrypt", { force: false });
+  startTask("decrypt", "准备数据", "/api/decrypt", { force: false });
 }
 </script>
 </body>

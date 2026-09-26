@@ -410,12 +410,15 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         account = current_account()
         key = account_key_state(account)
         decrypt = account_decrypt_state(account)
-        counts: dict = {"sessions": None, "contacts": None}
+        counts: dict = {"sessions": None, "contacts": None, "conversations": None}
         if account and decrypt["ready"] == decrypt["total"] and decrypt["total"] > 0:
             db = _db_for_account(account)
             if db:
                 try:
-                    counts["sessions"] = len(db.sessions(limit=100_000))
+                    every = db.sessions(limit=100_000)
+                    counts["sessions"] = len(every)
+                    counts["conversations"] = sum(
+                        1 for s in every if s.kind in ("group", "person"))
                     counts["contacts"] = len(db.contacts())
                 except Exception:
                     pass
@@ -473,7 +476,15 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
             return {"error": "databases not decrypted yet"}
         q = (query.get("q") or [""])[0] or None
         limit = int((query.get("limit") or [200])[0])
-        sessions = db.sessions(query=q, limit=min(limit, 2000))
+        # Default to real conversations; pass kinds=all to include official accounts.
+        raw_kinds = (query.get("kinds") or ["conversations"])[0]
+        if raw_kinds == "all":
+            kinds = None
+        elif raw_kinds == "conversations":
+            kinds = {"group", "person"}
+        else:
+            kinds = {k.strip() for k in raw_kinds.split(",") if k.strip()}
+        sessions = db.sessions(query=q, limit=min(limit, 2000), kinds=kinds)
         return {"sessions": [s.to_dict() for s in sessions]}
 
     def _api_contacts(self, query: dict) -> dict:
