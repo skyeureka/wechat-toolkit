@@ -30,6 +30,7 @@ import hashlib
 import re
 import sqlite3
 import time
+import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +63,26 @@ _IMAGE_KIND = ("image", 3)
 _VIDEO_KIND = ("video", 43)
 _VOICE_KIND = ("voice", 34)
 _VOICE_KIND_ALT = ("voice", 50)
+
+# Sticker payloads come from the CDN embedded in the message. Content-Type there is
+# unreliable (served as image/jpg for GIF and PNG alike), so the magic decides.
+_STICKER_UA = "MicroMessenger Client"
+_STICKER_TIMEOUT = 20
+
+
+def sticker_magic(data: bytes) -> str | None:
+    """File extension implied by a sticker payload's own magic, else None."""
+    if not data:
+        return None
+    if data[:6] in (b"GIF89a", b"GIF87a"):
+        return "gif"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith(b"RIFF") and b"WEBP" in data[:16]:
+        return "webp"
+    return None
 
 #: JPEG Start-Of-Frame markers carry the real pixel dimensions.
 _SOF_MARKERS = frozenset((0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB))
@@ -284,6 +305,63 @@ class MediaService:
         return hits
 
     # ----------------------------------------------------------- image keys
+    @staticmethod
+    def _sticker_source(msg) -> tuple[str, str]:
+        """(cdn url, md5) for a sticker message in either accepted form.
+
+        Callers hand over a MessageView (chat view) or a raw DB row dict (the media
+        endpoint), and only the former carries a ready-made ``media`` dict, so raw rows
+        are decoded here exactly as item_for_message does.
+        """
+        meta = getattr(msg, "media", None)
+        if meta is None and isinstance(msg, dict):
+            meta = msg.get("media")
+            if not meta:
+                try:
+                    parsed = parse_payload(
+                        int(msg.get("local_type", 0)),
+                        msg.get("message_content"),
+                        msg.get("source"),
+                    )
+                    meta = parsed.meta.to_dict() if parsed.meta else {}
+                except Exception:
+                    meta = {}
+        meta = meta or {}
+        return str(meta.get("url") or "").strip(), str(meta.get("md5") or "").strip()
+
+    def sticker_file(self, msg) -> Path | None:
+        """A sticker's picture on disk, fetched from the CDN when not yet cached.
+
+        The on-disk form under business/emoticon/ is an encrypted container that could
+        not be decoded (tried single-byte and keyed XOR, AES-128/256 in ECB/CBC with
+        zero/key/leading-block IVs across every header offset, and the V1 fixed keys).
+        The message itself carries a CDN URL for the same picture, so that is what the
+        export renders. Cached per md5 so repeated exports and live refreshes are free.
+        """
+        url, md5 = self._sticker_source(msg)
+        if not url.startswith(("http://", "https://")):
+            return None
+        key = md5 if md5 else hashlib.md5(url.encode("utf-8")).hexdigest()
+        out_dir = self.cache_dir / "stickers"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for existing in out_dir.glob(f"{key}.*"):
+            if existing.is_file() and existing.stat().st_size > 0:
+                return existing
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _STICKER_UA})
+            with urllib.request.urlopen(req, timeout=_STICKER_TIMEOUT) as resp:
+                data = resp.read()
+        except Exception:
+            return None
+        ext = sticker_magic(data)
+        if ext is None:
+            return None
+        target = out_dir / f"{key}.{ext}"
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(target)
+        return target
+
     def image_keys(self) -> ImageKeys | None:
         """kvcomm-derived V2 key set for this account (cached; may be None)."""
         if self._image_key_resolver is None:

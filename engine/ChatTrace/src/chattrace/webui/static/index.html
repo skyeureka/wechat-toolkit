@@ -701,7 +701,23 @@ function appendMedia(bubble, m) {
   if (kind === "image") { bubble.appendChild(imageCard(m)); return; }
   if (kind === "voice") { bubble.appendChild(voiceCard(m)); return; }
   if (kind === "video") { bubble.appendChild(videoCard(m)); return; }
-  if (kind === "emoji") { bubble.appendChild(stubCard("😀", "表情", metaLine(meta), "")); return; }
+  if (kind === "emoji") {
+    // Stickers are served as real pictures from the CDN cache; fall back to a stub
+    // when the fetch has not succeeded (offline, URL expired).
+    const url = md.url;
+    if (url) {
+      const card = document.createElement("div"); card.className = "mediaCard image";
+      const a = document.createElement("a"); a.href = url; a.target = "_blank";
+      const img = document.createElement("img");
+      img.className = "mediaImg thumb"; img.loading = "lazy"; img.alt = "表情";
+      img.onerror = () => { a.replaceWith(stubCard("😀", "表情", metaLine(meta), "表情图片未缓存")); };
+      img.src = url;
+      a.appendChild(img); card.appendChild(a);
+      return card;
+    }
+    bubble.appendChild(stubCard("😀", "表情", metaLine(meta), ""));
+    return;
+  }
   if (kind === "location") {
     const place = [meta.poi, meta.city].filter(Boolean).join(" · ") || "位置";
     const coords = (meta.latitude && meta.longitude) ? meta.latitude.toFixed(5) + ", " + meta.longitude.toFixed(5) : "";

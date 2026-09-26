@@ -522,6 +522,17 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         messages = []
         for m in page.messages:
             item = m.to_dict()
+            if media_svc is not None and m.kind == "emoji":
+                # Stickers render as pictures via /api/media/file?kind=sticker, which
+                # serves the CDN-cached file; the on-disk container is not decodable.
+                item["media"] = {
+                    "kind": "sticker",
+                    "url": (
+                        f"/api/media/file?kind=sticker"
+                        f"&username={urllib.parse.quote(username)}"
+                        f"&local_id={m.local_id}&ct={m.create_time}"
+                    ),
+                }
             if media_svc is not None and m.kind in ("image", "voice", "video"):
                 try:
                     media_item = media_svc.item_for_message(db, username, m)
@@ -583,6 +594,17 @@ class ChatTraceHandler(BaseHTTPRequestHandler):
         raw = db.raw_message_by_id(username, int(local_id_s), create_time)
         if raw is None:
             return self.send_error_json("message not found", 404)
+        # Stickers never resolve through MediaItem: their on-disk container stays
+        # encrypted, so the picture is served from the CDN-backed cache instead.
+        if kind == "sticker":
+            try:
+                path = media_svc.sticker_file(raw)
+            except Exception as exc:
+                return self.send_error_json(f"sticker fetch failed: {exc}", 500)
+            if path is None or not path.is_file():
+                return self.send_error_json("sticker unavailable", 404)
+            ctype = mimetypes.guess_type(path.name)[0] or "image/gif"
+            return self._send_file_stream(path, ctype)
         try:
             item = media_svc.item_for_message(db, username, raw)
         except Exception as exc:

@@ -107,7 +107,7 @@ class ChatExportService:
             if fmt == "txt":
                 count = self._write_txt(fh, username, display, progress, include_media, media, since)
             elif fmt == "md":
-                count = self._write_md(fh, username, display, progress, include_media, media, since)
+                count = self._write_md(fh, username, display, progress, include_media, media, since, output_path)
             elif fmt == "json":
                 count = self._write_json(fh, username, display, progress, include_media, media, since)
             else:
@@ -164,7 +164,8 @@ class ChatExportService:
 
     def _write_md(self, fh, username: str, display: str, progress: ProgressCallback | None,
                   include_media: bool = False, media=None,
-                  since: tuple[int, int] | None = None) -> int:
+                  since: tuple[int, int] | None = None,
+                  output_path: Path | None = None) -> int:
         """Markdown export.
 
         Reads well as plain text and renders properly in Obsidian/GitHub, which is
@@ -179,6 +180,13 @@ class ChatExportService:
         if since is not None:
             fh.write(f"| 增量起点 | `{since[0]},{since[1]}` |\n")
         fh.write("\n---\n\n")
+
+        # Stickers render as real pictures when media is on; the files live in an assets
+        # folder beside the markdown so the export stays a portable pair.
+        assets_dir = None
+        if include_media and media is not None and output_path is not None:
+            assets_dir = self._media_assets_dir(output_path)
+            assets_dir.mkdir(parents=True, exist_ok=True)
 
         count = 0
         current_day = ""
@@ -195,7 +203,13 @@ class ChatExportService:
             fh.write(f"**{who}** `{clock}`\n\n")
 
             text = (msg.text or "").strip()
-            if text:
+            if msg.kind == "emoji" and assets_dir is not None:
+                asset = self._sticker_asset(msg, username, assets_dir)
+                if asset is not None:
+                    fh.write(f"![表情]({assets_dir.name}/{asset.name})\n\n")
+                elif text:
+                    fh.write(_md_block(text) + "\n\n")
+            elif text:
                 fh.write(_md_block(text) + "\n\n")
 
             if msg.links:
@@ -460,6 +474,14 @@ class ChatExportService:
             return stub("🎬", "视频", info, why)
 
         if kind == "emoji":
+            if media is not None and assets_dir is not None:
+                asset = self._sticker_asset(msg, username, assets_dir)
+                if asset is not None:
+                    stats["sticker"] = stats.get("sticker", 0) + 1
+                    badge = f'<div class="badge">{esc(info)}</div>' if info else ""
+                    rel = esc(asset.name)
+                    return (f'<div class="card media"><a href="{rel}" target="_blank">'
+                            f'<img loading="lazy" src="{rel}" alt="表情">‍{badge}</a></div>')
             return stub("😀", "表情", info)
         if kind == "location":
             place = " · ".join(x for x in (meta.get("poi"), meta.get("city")) if x) or "位置"
@@ -484,6 +506,24 @@ class ChatExportService:
                 meta.get("label") or "", meta.get("url") or "",
             )
         return f'<span>{esc(msg.text)}</span>'
+
+    def _sticker_asset(self, msg, username: str, assets_dir: Path) -> Path | None:
+        """Copy one sticker picture into the export's assets dir; None when unavailable."""
+        svc = self._media
+        if svc is None:
+            return None
+        try:
+            src = svc.sticker_file(msg)
+        except Exception:
+            return None
+        if src is None or not src.is_file():
+            return None
+        target = assets_dir / f"sticker_{msg.local_id}{src.suffix}"
+        if not target.exists():
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_bytes(src.read_bytes())
+            tmp.replace(target)
+        return target
 
     def _write_media_asset(self, item, msg, username: str, assets_dir: Path) -> Path | None:
         """Materialize the media payload next to the exported HTML; returns the file."""
