@@ -446,7 +446,16 @@ function pollTask(taskId, kind) {
       $("toastTitle").textContent = (t.status === "done" ? "✓ " : "✗ ") + t.title + (t.status === "done" ? " 完成" : " 失败");
       if (t.error) logLine(t.error, "err");
       refreshState().then(() => {
-        if (kind === "decrypt" || kind === "key-capture") { renderKeyCard(); loadDecryptStatus(); if (kind === "decrypt") goto(4); }
+        if (kind === "decrypt" || kind === "key-capture") {
+          renderKeyCard(); loadDecryptStatus();
+          if (kind === "decrypt") {
+            liveDecryptAt = 0;
+            // Only advance from the connect screen; never yank the reader out of a chat
+            // or the export form, which the background sync would otherwise interrupt.
+            const act = document.querySelector(".screen.active");
+            if (act && act.id === "screen-1") goto(4);
+          }
+        }
         if (kind === "export") renderExportResult(t.result);
         if (kind === "key-capture" && t.status === "done") { renderConnect(); autoDecrypt(); }
       });
@@ -561,10 +570,18 @@ async function fetchChat(older = false) {
   if (older && c.before) url += "&before=" + c.before;
   const data = await api(url);
   if (data.error) { $("chatBody").innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
-  if (older) { renderMessages(data.messages, true); } else { renderMessages(data.messages, false); }
-  c.loaded += data.messages.length;
+  // The API returns newest-first. A chat pane reads top-to-bottom as a conversation, so
+  // render oldest-first: otherwise the column is inverted and scrolling to the bottom
+  // lands on the oldest messages instead of the latest ones.
+  const ordered = data.messages.slice().reverse();
+  if (older) { renderMessages(ordered, true); } else { renderMessages(ordered, false); }
+  c.loaded += ordered.length;
   $("chatId").textContent = `${c.username} · 共 ${data.total ?? "?"} 条 · 已显示 ${c.loaded}`;
-  if (!older && data.has_more) c.before = (data.messages[0] && data.messages[0].create_time) + "," + (data.messages[0] && data.messages[0].local_id);
+  if (!older && data.has_more && ordered.length) {
+    // page backwards from the OLDEST message shown, not the newest
+    const oldest = ordered[0];
+    c.before = oldest.create_time + "," + oldest.local_id;
+  }
   const wrap = $("moreWrap"); wrap.innerHTML = "";
   if (data.has_more) {
     const btn = document.createElement("button"); btn.className = "btn"; btn.id = "moreBtn"; btn.textContent = "加载更早的消息 ↑";
@@ -576,7 +593,11 @@ async function fetchChat(older = false) {
       if (!ct) return;
       btn.textContent = "加载中…"; btn.disabled = true;
       const data2 = await api(`/api/chat/${encodeURIComponent(c.username)}?limit=200&before=${ct},${lid}`);
-      if (data2.messages && data2.messages.length) { renderMessages(data2.messages, true); c.before = data2.has_more ? data2.messages[0].create_time + "," + data2.messages[0].local_id : null; }
+      if (data2.messages && data2.messages.length) {
+        const olderBatch = data2.messages.slice().reverse();
+        renderMessages(olderBatch, true);
+        c.before = data2.has_more ? olderBatch[0].create_time + "," + olderBatch[0].local_id : null;
+      }
       if (!data2.has_more) { wrap.innerHTML = '<div class="hint">已到最早消息</div>'; return; }
       btn.textContent = "加载更早的消息 ↑"; btn.disabled = false;
     };
@@ -800,8 +821,11 @@ function renderMessages(messages, mode) {
     return;
   }
   if (mode) {
+    // keep the reader's place: compensate for the height the prepended block added
+    const prevHeight = body.scrollHeight;
+    const prevTop = body.scrollTop;
     body.prepend(frag);
-    body.scrollTop = frag.firstChild.offsetTop - 100;
+    body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
   } else {
     body.innerHTML = "";
     body.appendChild(frag);
@@ -874,6 +898,7 @@ function reconcileBoot() {
 // timer. Only the open chat is diffed; lists are re-rendered wholesale.
 let liveTimer = null;
 let liveBusy = false;
+let liveDecryptAt = 0;          // when an incremental decrypt was last kicked
 async function liveTick() {
   if (liveBusy) return;
   liveBusy = true;
@@ -882,8 +907,15 @@ async function liveTick() {
     await refreshState();
     const after = STATE && STATE.decrypted ? STATE.decrypted.ready : 0;
     const ready = STATE && STATE.decrypted && STATE.decrypted.total > 0 && after === STATE.decrypted.total;
-    if (after !== before) {  // decryption caught up: enable the later steps
-      if (ready) loadDecryptStatus();
+    if (after !== before && ready) loadDecryptStatus();
+    // WeChat rewrites its databases while running, which makes our plaintext copies
+    // stale. Re-decrypt automatically so new messages show up without any clicks.
+    // Guarded by a cooldown only: `ready` going true ends the cycle, and an
+    // incremental run with nothing stale is a fast no-op.
+    if (!ready && STATE && STATE.key && STATE.key.present
+        && Date.now() - liveDecryptAt > 15000) {
+      liveDecryptAt = Date.now();
+      startTask("decrypt", "同步新消息", "/api/decrypt", { force: false });
     }
     const active = document.querySelector(".screen.active");
     if (active && active.id === "screen-4" && ready) {
