@@ -40,6 +40,29 @@ def _ts(epoch: int) -> str:
     return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _ts_minute(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
+
+
+# Readable day headings. The year is part of the date, so a span crossing a year
+# boundary is already unambiguous without a separate year separator.
+_WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+# A per-message timestamp is noise in a chat log; what a reader wants to know is when
+# the conversation resumed after a pause. A marker is emitted only when the gap since
+# the previous message reaches this threshold.
+_TIME_MARKER_GAP_SECONDS = 30 * 60
+
+
+def _day_label(epoch: int) -> str:
+    dt = datetime.fromtimestamp(epoch)
+    return f"{dt.strftime('%Y-%m-%d')} {_WEEKDAYS[dt.weekday()]}"
+
+
+def _clock(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
 # A line-leading character that markdown would interpret as structure.
 _MD_STRUCT_RE = re.compile(r"^(\s*)([#>\-+*=|`]|\d+\.)", re.MULTILINE)
 
@@ -162,25 +185,36 @@ class ChatExportService:
             progress(count, None)
         return count
 
+    def _md_body(self, msg, username: str, assets_dir: Path | None) -> str:
+        """One line of message body, without the speaker prefix.
+
+        A chat message is a single line in practice, so embedded newlines are folded to
+        spaces: keeping "who: text" on one line is what makes the log readable instead of
+        a four-line block per message. Folding is also why no line-leading escaping is
+        applied here - every line already starts with "who: ", so a leading "-" or "6." in
+        the message text can no longer be read as markdown structure, and escaping it
+        would just show a stray backslash.
+        """
+        text = (msg.text or "").strip()
+        if msg.kind == "emoji" and assets_dir is not None:
+            asset = self._sticker_asset(msg, username, assets_dir)
+            if asset is not None:
+                return f"![表情]({assets_dir.name}/{asset.name})"
+        if not text:
+            return ""
+        return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
+
     def _write_md(self, fh, username: str, display: str, progress: ProgressCallback | None,
                   include_media: bool = False, media=None,
                   since: tuple[int, int] | None = None,
                   output_path: Path | None = None) -> int:
-        """Markdown export.
+        """Markdown export, laid out to be read rather than to be machine-parsed.
 
-        Reads well as plain text and renders properly in Obsidian/GitHub, which is
-        what makes it the sensible default: one file, no assets required, no HTML
-        escaping surprises, and diff-friendly when appended incrementally.
+        One line per message (``who: text``), with a time marker only where the
+        conversation pauses, instead of a bold speaker heading plus a timestamp on every
+        single message. A 2400-message chat goes from ~10k lines of scaffolding to the
+        conversation itself, which is what makes the file worth re-reading later.
         """
-        exported_at = datetime.now()
-        fh.write(f"# {display}\n\n")
-        fh.write("| | |\n|---|---|\n")
-        fh.write(f"| 会话 | `{username}` |\n")
-        fh.write(f"| 导出时间 | {exported_at.strftime('%Y-%m-%d %H:%M:%S')} |\n")
-        if since is not None:
-            fh.write(f"| 增量起点 | `{since[0]},{since[1]}` |\n")
-        fh.write("\n---\n\n")
-
         # Stickers render as real pictures when media is on; the files live in an assets
         # folder beside the markdown so the export stays a portable pair.
         assets_dir = None
@@ -188,37 +222,69 @@ class ChatExportService:
             assets_dir = self._media_assets_dir(output_path)
             assets_dir.mkdir(parents=True, exist_ok=True)
 
-        count = 0
+        lines: list[str] = []
+        mine = peer = system = 0
+        first_ts: int | None = None
+        last_ts = 0
         current_day = ""
+        prev_ts: int | None = None
+        count = 0
+
         for msg in self.db.iter_chat_all(username, since):
+            if first_ts is None:
+                first_ts = msg.create_time
+            last_ts = msg.create_time
+            if msg.kind == "system" or msg.base_type == 10000:
+                system += 1
+            elif msg.is_outgoing:
+                mine += 1
+            else:
+                peer += 1
+
             day = datetime.fromtimestamp(msg.create_time).strftime("%Y-%m-%d")
             if day != current_day:
                 if current_day:
-                    fh.write("\n")
-                fh.write(f"## {day}\n\n")
+                    lines.append("")
+                lines.append(f"## {_day_label(msg.create_time)}")
+                lines.append("")
                 current_day = day
+                prev_ts = None  # the heading already dates what follows
+            elif prev_ts is not None and msg.create_time - prev_ts >= _TIME_MARKER_GAP_SECONDS:
+                lines.append("")
+                lines.append(f"· {_clock(msg.create_time)} ·")
+            else:
+                lines.append("")
+            prev_ts = msg.create_time
 
-            clock = datetime.fromtimestamp(msg.create_time).strftime("%H:%M")
             who = "我" if msg.is_outgoing else (msg.sender or "群成员")
-            fh.write(f"**{who}** `{clock}`\n\n")
-
-            text = (msg.text or "").strip()
-            if msg.kind == "emoji" and assets_dir is not None:
-                asset = self._sticker_asset(msg, username, assets_dir)
-                if asset is not None:
-                    fh.write(f"![表情]({assets_dir.name}/{asset.name})\n\n")
-                elif text:
-                    fh.write(_md_block(text) + "\n\n")
-            elif text:
-                fh.write(_md_block(text) + "\n\n")
-
+            body = self._md_body(msg, username, assets_dir)
+            line = f"{who}: {body}".rstrip()
             if msg.links:
-                extras = [link for link in msg.links if link not in text]
-                for link in extras:
-                    fh.write(f"<{link}>\n\n")
+                extras = [link for link in msg.links if link not in (msg.text or "")]
+                if extras:
+                    line += "  " + " ".join(f"<{link}>" for link in extras)
+            lines.append(line)
+
             count += 1
             if progress and count % 500 == 0:
                 progress(count, None)
+
+        # Header after the body is built: the summary needs the counts, and buffering one
+        # chat's lines costs a few MB at most while the alternative is reading the DB
+        # twice.
+        fh.write(f"# {display}\n\n")
+        fh.write("| | |\n|---|---|\n")
+        fh.write(f"| 会话 | `{username}` |\n")
+        fh.write(f"| 消息总数 | {count}（我 {mine} · {display} {peer} · 系统 {system}） |\n")
+        if first_ts is not None:
+            fh.write(f"| 时间范围 | {_ts_minute(first_ts)} ~ {_ts_minute(last_ts)} |\n")
+        fh.write(f"| 导出时间 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |\n")
+        if since is not None:
+            fh.write(f"| 增量起点 | `{since[0]},{since[1]}` |\n")
+        fh.write("\n---\n\n")
+        for line in lines:
+            fh.write(line + "\n")
+
         if progress:
             progress(count, None)
         return count
