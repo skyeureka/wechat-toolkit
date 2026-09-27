@@ -16,3 +16,6 @@ diag_*.png
 verify_out.txt
 sessions.txt
 test_export.*
+
+# autostart runtime output - regenerated locally, never shared
+autostart/logs/
