@@ -13,13 +13,16 @@ $Launcher  = Join-Path $Base 'open-webui-hidden.vbs'
 $Name      = '微信记录查看器.lnk'
 
 # The desktop really lives at T:\DeskTop on this machine, not in the user profile.
-$DesktopCandidates = @('T:\DeskTop', (Join-Path $env:USERPROFILE 'Desktop'))
-$Desktop = $DesktopCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $Desktop) { throw 'no desktop folder found' }
+# The entry belongs in the personal-output folder rather than the desktop root, which is
+# where the operator keeps their own deliverables.
+$DesktopRoot = 'T:\DeskTop'
+$OutDir = Join-Path $DesktopRoot '个人产品库'
+if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
+if (-not (Test-Path $OutDir)) { throw "output folder unavailable: $OutDir" }
 
 if (-not (Test-Path $Launcher)) { throw "launcher not found: $Launcher" }
 
-$linkPath = Join-Path $Desktop $Name
+$linkPath = Join-Path $OutDir $Name
 
 $shell = New-Object -ComObject WScript.Shell
 $lnk = $shell.CreateShortcut($linkPath)
